@@ -1,300 +1,184 @@
 <?php
-error_reporting(E_ALL & ~E_WARNING & ~E_NOTICE);
-
-/* ================= CONFIG ================= */
-
+// ================= CONFIG =================
 $BOT_TOKEN = getenv("BOT_TOKEN");
-$SUPA_URL  = getenv("SUPABASE_URL");
-$SUPA_KEY  = getenv("SUPABASE_KEY");
-
+$SUPA_URL = getenv("SUPABASE_URL");
+$SUPA_KEY = getenv("SUPABASE_KEY");
+$ADMIN_IDS = array_map('trim', explode(",", getenv("ADMIN_IDS")));
+$SUPPORT = getenv("SUPPORT_USERNAME") ?: "@Slursupportrobot";
 $API = "https://api.telegram.org/bot$BOT_TOKEN/";
 
-/* ================= HELPERS ================= */
-
-function tg($m, $d){
+// ================= HELPERS =================
+function tg($method, $data){
     global $API;
-    file_get_contents($API.$m."?".http_build_query($d));
+    $ch = curl_init($API.$method);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_POST => true,
+        CURLOPT_HTTPHEADER => ["Content-Type: application/json"],
+        CURLOPT_POSTFIELDS => json_encode($data)
+    ]);
+    curl_exec($ch); curl_close($ch);
 }
 
-function supa($method, $table, $query="", $body=null){
-    global $SUPA_URL, $SUPA_KEY;
-    $ch = curl_init("$SUPA_URL/rest/v1/$table$query");
+function sb($endpoint,$method="GET",$body=null){
+    global $SUPA_URL,$SUPA_KEY;
+    $ch = curl_init("$SUPA_URL/rest/v1/$endpoint");
     curl_setopt_array($ch,[
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_CUSTOMREQUEST  => $method,
-        CURLOPT_HTTPHEADER => [
+        CURLOPT_RETURNTRANSFER=>true,
+        CURLOPT_CUSTOMREQUEST=>$method,
+        CURLOPT_HTTPHEADER=>[
             "apikey: $SUPA_KEY",
             "Authorization: Bearer $SUPA_KEY",
-            "Content-Type: application/json",
-            "Prefer: return=representation"
+            "Content-Type: application/json"
         ],
-        CURLOPT_POSTFIELDS => $body ? json_encode($body) : null
+        CURLOPT_POSTFIELDS=>$body?json_encode($body):null
     ]);
     $res = curl_exec($ch);
     curl_close($ch);
-    return json_decode($res, true) ?? [];
+    return json_decode($res,true);
 }
 
-function isAdmin($id){
-    $r = supa("GET","admins","?user_id=eq.$id");
-    return count($r) > 0;
-}
+function setting($key){ $r=sb("settings?key=eq.$key"); return $r[0]['value']??""; }
+function stock($quality=null){ $where = $quality ? "&quality=eq.$quality" : ""; $r=sb("coupons?is_used=eq.false$where"); return count($r); }
+function isAdmin($id){ global $ADMIN_IDS; return in_array($id,$ADMIN_IDS); }
 
-function setting($key){
-    $r = supa("GET","settings","?key=eq.$key");
-    return $r[0]["value"] ?? "";
-}
+// ================= STATE =================
+$STATE_FILE = __DIR__."/state.json";
+$STATE = file_exists($STATE_FILE)?json_decode(file_get_contents($STATE_FILE),true):[];
+function setState($id,$data){ global $STATE,$STATE_FILE;$STATE[$id]=$data;file_put_contents($STATE_FILE,json_encode($STATE));}
+function getState($id){ global $STATE; return $STATE[$id]??null;}
+function clearState($id){ global $STATE,$STATE_FILE; unset($STATE[$id]); file_put_contents($STATE_FILE,json_encode($STATE));}
 
-function setSetting($key,$value){
-    supa("PATCH","settings","?key=eq.$key",["value"=>$value]);
-}
-
-function stepFile($id){
-    return sys_get_temp_dir()."/step_$id";
-}
-
-/* ================= UPDATE SAFE PARSE ================= */
-
+// ================= UPDATE =================
 $update = json_decode(file_get_contents("php://input"), true);
+$chat_id = $update['message']['chat']['id'] ?? $update['callback_query']['message']['chat']['id'] ?? null;
+$user_id = $update['message']['from']['id'] ?? $update['callback_query']['from']['id'] ?? null;
+$text = $update['message']['text'] ?? null;
+$data = $update['callback_query']['data'] ?? null;
 
-if (isset($update["message"]["chat"]["id"])) {
-    $chat_id = $update["message"]["chat"]["id"];
-    $text    = $update["message"]["text"] ?? null;
-    $msg     = $update["message"];
-    $cb      = null;
-}
-elseif (isset($update["callback_query"]["message"]["chat"]["id"])) {
-    $chat_id = $update["callback_query"]["message"]["chat"]["id"];
-    $cb      = $update["callback_query"]["data"];
-    $text    = null;
-    $msg     = $update["callback_query"]["message"];
-}
-else {
-    exit; // Ignore unsupported updates safely
-}
-
-/* ================= START ================= */
-
-if ($text === "/start") {
-
-    $keyboard = [
-        [["text"=>"🛒 Buy Coupon"]],
-        [["text"=>"📦 Stock"],["text"=>"📜 My Orders"]],
-        [["text"=>"🆘 Support"]]
+// ================= START MENU =================
+if($text=="/start" || $text=="🔄 Menu"){
+    clearState($chat_id);
+    $inline_buttons = [
+        [["text"=>"🛒 Buy Coupon","callback_data"=>"buy"]],
+        [["text"=>"📦 Stock","callback_data"=>"stock"]],
+        [["text"=>"📞 Support","callback_data"=>"support"]],
+        [["text"=>"📝 Orders","callback_data"=>"orders"]]
     ];
+    if(isAdmin($user_id)) $inline_buttons[]=[["text"=>"⚙ Admin Panel","callback_data"=>"admin"]];
+    tg("sendMessage",["chat_id"=>$chat_id,"text"=>"🎟 Welcome to Coupon Bot","reply_markup"=>json_encode(["inline_keyboard"=>$inline_buttons])]);
+}
 
-    if (isAdmin($chat_id)) {
-        $keyboard[] = [["text"=>"🔐 Admin Panel"]];
-    }
+// ================= USER BUTTONS =================
+if($data=="stock"){ tg("sendMessage",["chat_id"=>$chat_id,"text"=>"📦 Available coupons: ".stock()]); }
+if($data=="support"){ tg("sendMessage",["chat_id"=>$chat_id,"text"=>"Contact: $SUPPORT"]); }
+if($data=="orders"){
+    $orders=sb("orders?user_id=eq.$user_id"); $msg="Your Orders:\n";
+    foreach($orders as $o){ $msg.="ID:".$o['id']." Qty:".$o['qty']." Total:".$o['total']." Status:".$o['status']."\n"; }
+    tg("sendMessage",["chat_id"=>$chat_id,"text"=>$msg]);
+}
 
+// ================= BUY COUPON FLOW =================
+if($data=="buy"){
+    setState($chat_id,["step"=>"terms"]);
     tg("sendMessage",[
         "chat_id"=>$chat_id,
-        "text"=>"Welcome to Coupon Selling Bot",
+        "text"=>"⚠️ Disclaimer
+
+1. Once coupon is delivered, no returns or refunds will be accepted.
+2. All coupons are fresh and valid. Please check usage instructions carefully.
+3. All sales are final. No refunds, no replacements, no exceptions.
+
+✅ By purchasing, you agree to these terms.",
         "reply_markup"=>json_encode([
-            "keyboard"=>$keyboard,
-            "resize_keyboard"=>true
+            "inline_keyboard"=>[[["text"=>"✅ Accept Terms","callback_data"=>"accept_terms"]],[["text"=>"❌ Cancel","callback_data"=>"cancel"]]]
         ])
     ]);
 }
 
-/* ================= USER ================= */
-
-if ($text === "📦 Stock") {
-    $r = supa("GET","coupons","?used=eq.false");
+if($data=="accept_terms"){ 
+    setState($chat_id,["step"=>"choose_quality"]);
     tg("sendMessage",[
         "chat_id"=>$chat_id,
-        "text"=>"Available coupons: ".count($r)
-    ]);
-}
-
-if ($text === "🆘 Support") {
-    tg("sendMessage",[
-        "chat_id"=>$chat_id,
-        "text"=>"Contact support: @Slursupportrobot"
-    ]);
-}
-
-if ($text === "📜 My Orders") {
-    $r = supa("GET","orders","?user_id=eq.$chat_id&status=eq.approved");
-    $out = "";
-    foreach ($r as $o) {
-        $out .= "• Order ID: ".$o["id"]."\n";
-    }
-    tg("sendMessage",[
-        "chat_id"=>$chat_id,
-        "text"=>$out ?: "No orders found"
-    ]);
-}
-
-/* ================= BUY FLOW ================= */
-
-if ($text === "🛒 Buy Coupon") {
-    $price = setting("price");
-    tg("sendMessage",[
-        "chat_id"=>$chat_id,
-        "text"=>"500 OFF on 500 (₹$price)\n\nHow many coupons do you want?"
-    ]);
-    file_put_contents(stepFile($chat_id),"qty");
-}
-
-$step = file_exists(stepFile($chat_id)) ? file_get_contents(stepFile($chat_id)) : null;
-
-if ($step === "qty" && is_numeric($text)) {
-    file_put_contents(stepFile($chat_id),"terms|$text");
-    tg("sendMessage",[
-        "chat_id"=>$chat_id,
-        "text"=>"⚠️ Once delivered, no refunds.\n\nDo you accept?",
+        "text"=>"Select coupon quality:",
         "reply_markup"=>json_encode([
-            "inline_keyboard"=>[
-                [["text"=>"✅ Accept Terms","callback_data"=>"ACCEPT"]]
-            ]
+            "inline_keyboard"=>[[["text"=>"Basic","callback_data"=>"quality_basic"]],[["text"=>"Premium","callback_data"=>"quality_premium"]]]
         ])
     ]);
 }
 
-if ($cb === "ACCEPT") {
-    $qty = explode("|",file_get_contents(stepFile($chat_id)))[1];
-    $total = $qty * setting("price");
-    file_put_contents(stepFile($chat_id),"pay|$qty");
-
-    tg("sendPhoto",[
-        "chat_id"=>$chat_id,
-        "photo"=>setting("qr"),
-        "caption"=>"Pay ₹$total\nAfter payment click below",
-        "reply_markup"=>json_encode([
-            "inline_keyboard"=>[
-                [["text"=>"✅ I have done payment","callback_data"=>"PAID"]]
-            ]
-        ])
-    ]);
+if(strpos($data,"quality_")===0){
+    $quality=str_replace("quality_","",$data);
+    setState($chat_id,["step"=>"qty","quality"=>$quality]);
+    tg("sendMessage",["chat_id"=>$chat_id,"text"=>"Enter quantity of $quality coupons to buy:"]);
 }
 
-if ($cb === "PAID") {
-    file_put_contents(stepFile($chat_id),"payer");
-    tg("sendMessage",[
-        "chat_id"=>$chat_id,
-        "text"=>"Send payer name"
-    ]);
+// ================= QUANTITY =================
+$state=getState($chat_id);
+if($state && $state['step']=="qty" && is_numeric($text)){
+    setState($chat_id,["step"=>"payer","quality"=>$state['quality'],"qty"=>$text]);
+    $price=setting("price_".$state['quality']); $total=$price*$text;
+    tg("sendPhoto",["chat_id"=>$chat_id,"photo"=>setting("qr"),"caption"=>"Total amount: ₹$total\nSend payer name after payment."]);
 }
 
-if ($step === "payer" && $text) {
-    file_put_contents(stepFile($chat_id),"proof|$text");
-    tg("sendMessage",[
-        "chat_id"=>$chat_id,
-        "text"=>"Send payment screenshot"
-    ]);
+// ================= PAYER NAME =================
+$state=getState($chat_id);
+if($state && $state['step']=="payer" && !empty($text)){
+    $state['step']="proof"; $state['payer']=$text; setState($chat_id,$state);
+    tg("sendMessage",["chat_id"=>$chat_id,"text"=>"Send payment screenshot"]);
 }
 
-if (isset($msg["photo"]) && str_starts_with($step,"proof")) {
+// ================= PAYMENT PROOF =================
+$state=getState($chat_id);
+if($state && $state['step']=="proof" && isset($update['message']['photo'])){
+    $file_id=end($update['message']['photo'])['file_id'];
+    $qty=$state['qty']; $quality=$state['quality']; $payer=$state['payer'];
+    $price=setting("price_$quality"); $total=$price*$qty;
 
-    $payer = explode("|",$step)[1];
-    $qty   = explode("|",file_get_contents(stepFile($chat_id)))[1];
-    $oid   = uniqid();
+    $order=sb("orders","POST",["user_id"=>$user_id,"username"=>"@".$update['message']['from']['username'],"qty"=>$qty,"total"=>$total,"payer"=>$payer,"proof"=>$file_id,"quality"=>$quality]);
 
-    supa("POST","orders",[
-        "id"=>$oid,
-        "user_id"=>$chat_id,
-        "qty"=>$qty,
-        "payer"=>$payer,
-        "status"=>"pending"
-    ]);
-
-    foreach (supa("GET","admins") as $a) {
-        tg("sendMessage",[
-            "chat_id"=>$a["user_id"],
-            "text"=>"💰 New Payment\nUser: $chat_id\nQty: $qty\nPayer: $payer",
+    foreach($ADMIN_IDS as $admin){
+        tg("sendPhoto",[
+            "chat_id"=>$admin,
+            "photo"=>$file_id,
+            "caption"=>"🧾 Order #".$order[0]['id']."\nUser: @$user_id\nQty: $qty\nTotal: ₹$total\nPayer: $payer\nQuality: $quality",
             "reply_markup"=>json_encode([
-                "inline_keyboard"=>[
-                    [["text"=>"✅ Approve","callback_data"=>"OK|$oid"]],
-                    [["text"=>"❌ Decline","callback_data"=>"NO|$oid"]]
-                ]
+                "inline_keyboard"=>[[["text"=>"✅ Approve","callback_data"=>"approve_".$order[0]['id']."_$quality"]],[["text"=>"❌ Decline","callback_data"=>"decline_".$order[0]['id']]]]
             ])
         ]);
     }
-
-    unlink(stepFile($chat_id));
-    tg("sendMessage",[
-        "chat_id"=>$chat_id,
-        "text"=>"⏳ Waiting for admin approval"
-    ]);
+    clearState($chat_id);
+    tg("sendMessage",["chat_id"=>$chat_id,"text"=>"⏳ Waiting for admin approval"]);
 }
 
-/* ================= ADMIN PANEL ================= */
-
-if ($text === "🔐 Admin Panel" && isAdmin($chat_id)) {
-
-    tg("sendMessage",[
-        "chat_id"=>$chat_id,
-        "text"=>"🔐 Admin Panel",
-        "reply_markup"=>json_encode([
-            "inline_keyboard"=>[
-                [["text"=>"➕ Add Coupons","callback_data"=>"ADD"]],
-                [["text"=>"💰 Change Price","callback_data"=>"PRICE"]],
-                [["text"=>"🖼 Update QR","callback_data"=>"QR"]]
-            ]
-        ])
-    ]);
+// ================= ADMIN PANEL =================
+if($data=="admin" && isAdmin($user_id)){
+    $admin_buttons = [
+        [["text"=>"➕ Add Coupons","callback_data"=>"add_coupon"]],
+        [["text"=>"➖ Remove Coupons","callback_data"=>"remove_coupon"]],
+        [["text"=>"💰 Change Price","callback_data"=>"change_price"]],
+        [["text"=>"🖼 Update QR","callback_data"=>"update_qr"]],
+        [["text"=>"📦 View Stock","callback_data"=>"view_stock"]]
+    ];
+    tg("sendMessage",["chat_id"=>$chat_id,"text"=>"⚙ Admin Panel","reply_markup"=>json_encode(["inline_keyboard"=>$admin_buttons])]);
 }
 
-/* ================= ADMIN ACTIONS ================= */
-
-if ($cb && isAdmin($chat_id)) {
-
-    if ($cb === "ADD") {
-        file_put_contents(stepFile($chat_id),"add");
-        tg("sendMessage",["chat_id"=>$chat_id,"text"=>"Send coupon codes (one per line)"]);
-    }
-
-    if ($cb === "PRICE") {
-        file_put_contents(stepFile($chat_id),"price");
-        tg("sendMessage",["chat_id"=>$chat_id,"text"=>"Send new price"]);
-    }
-
-    if ($cb === "QR") {
-        file_put_contents(stepFile($chat_id),"qr");
-        tg("sendMessage",["chat_id"=>$chat_id,"text"=>"Send QR image"]);
-    }
-
-    if (str_starts_with($cb,"OK")) {
-        $oid = explode("|",$cb)[1];
-        $order = supa("GET","orders","?id=eq.$oid")[0];
-        $coupons = supa("GET","coupons","?used=eq.false&limit=".$order["qty"]);
-
-        foreach ($coupons as $c) {
-            supa("PATCH","coupons","?id=eq.{$c["id"]}",["used"=>true]);
-            tg("sendMessage",[
-                "chat_id"=>$order["user_id"],
-                "text"=>"🎟 Coupon:\n".$c["code"]
-            ]);
-        }
-
-        supa("PATCH","orders","?id=eq.$oid",["status"=>"approved"]);
-    }
-
-    if (str_starts_with($cb,"NO")) {
-        $oid = explode("|",$cb)[1];
-        supa("PATCH","orders","?id=eq.$oid",["status"=>"declined"]);
+// ================= ADMIN APPROVE / DECLINE =================
+if(strpos($data,"approve_")===0 && isAdmin($user_id)){
+    list($oid,$quality)=explode("_",str_replace("approve_","",$data));
+    $order=sb("orders?id=eq.$oid")[0];
+    $coupons=sb("coupons?quality=eq.$quality&is_used=eq.false&limit=".$order['qty']);
+    if(!$coupons){ tg("sendMessage",["chat_id"=>$order['user_id'],"text"=>"❌ Not enough stock"]); }
+    else{
+        foreach($coupons as $c) sb("coupons?id=eq.".$c['id'],"PATCH",["is_used"=>true]);
+        tg("sendMessage",["chat_id"=>$order['user_id'],"text"=>"✅ Payment approved!\nYour coupons:\n".implode("\n",array_column($coupons,'code'))]);
+        sb("orders?id=eq.$oid","PATCH",["status"=>"approved"]);
     }
 }
 
-/* ================= ADMIN STEPS ================= */
-
-if ($step === "add" && $text) {
-    foreach (explode("\n",$text) as $c) {
-        if (trim($c)) supa("POST","coupons",["code"=>trim($c)]);
-    }
-    unlink(stepFile($chat_id));
-    tg("sendMessage",["chat_id"=>$chat_id,"text"=>"Coupons added"]);
-}
-
-if ($step === "price" && is_numeric($text)) {
-    setSetting("price",(int)$text);
-    unlink(stepFile($chat_id));
-    tg("sendMessage",["chat_id"=>$chat_id,"text"=>"Price updated"]);
-}
-
-if ($step === "qr" && isset($msg["photo"])) {
-    setSetting("qr",$msg["photo"][0]["file_id"]);
-    unlink(stepFile($chat_id));
-    tg("sendMessage",["chat_id"=>$chat_id,"text"=>"QR updated"]);
+if(strpos($data,"decline_")===0 && isAdmin($user_id)){
+    $oid=str_replace("decline_","",$data);
+    $order=sb("orders?id=eq.$oid")[0];
+    tg("sendMessage",["chat_id"=>$order['user_id'],"text"=>"❌ Payment declined by admin"]);
+    sb("orders?id=eq.$oid","PATCH",["status"=>"declined"]);
 }
