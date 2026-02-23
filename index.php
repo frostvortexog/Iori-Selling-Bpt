@@ -1,6 +1,6 @@
 <?php
 $BOT_TOKEN = getenv("BOT_TOKEN");
-$ADMIN_IDS = explode(",", getenv("ADMIN_IDS"));
+$ADMIN_IDS = explode(",", getenv("ADMIN_IDS")); // comma separated ids
 $SUPA_URL  = getenv("SUPABASE_URL");
 $SUPA_KEY  = getenv("SUPABASE_KEY");
 
@@ -34,7 +34,6 @@ function supa($endpoint,$method="GET",$body=null){
 
 $msg = $update["message"] ?? null;
 $cb  = $update["callback_query"] ?? null;
-
 $uid = $msg["from"]["id"] ?? $cb["from"]["id"];
 $cid = $msg["chat"]["id"] ?? $cb["message"]["chat"]["id"];
 $text = $msg["text"] ?? null;
@@ -112,7 +111,7 @@ if($state && $state["step"]=="qty" && is_numeric($text)){
     $total = $qty * $price;
     $purchase_time = date("Y-m-d H:i:s");
 
-    // Store all in state
+    // Store in state
     supa("/rest/v1/user_state","POST",[
         "user_id"=>$uid,
         "step"=>"terms",
@@ -155,7 +154,6 @@ if($cb){
         $purchase_time = $state["data"]["purchase_time"];
         $set = supa("/rest/v1/settings?id=eq.1")[0];
 
-        // Move to paid step
         supa("/rest/v1/user_state","POST",[
             "user_id"=>$uid,
             "step"=>"paid",
@@ -165,7 +163,7 @@ if($cb){
         tg("sendPhoto",[
             "chat_id"=>$cid,
             "photo"=>$set["qr_file_id"],
-            "caption"=>"🎟️ Coupon Purchase\n\nQty: $qty\nTotal: ₹$total\nTime: $purchase_time",
+            "caption"=>"🎟️ Coupon Purchase\n\nQuantity: $qty\nTotal: ₹$total\nTime: $purchase_time",
             "reply_markup"=>json_encode([
                 "inline_keyboard"=>[
                     [["text"=>"💸 I have done the payment","callback_data"=>"paid"]]
@@ -275,7 +273,7 @@ if($state){
                     tg("sendPhoto",[
                         "chat_id"=>$admin,
                         "photo"=>$file,
-                        "caption"=>"📥 New Order\nUser: $uid\nQty: {$d['qty']}\nTotal: ₹{$d['total']}\nPayer: {$d['payer']}\nTime: {$d['purchase_time']}",
+                        "caption"=>"📥 New Order\nUser: $uid\nQuantity: {$d['qty']}\nTotal: ₹{$d['total']}\nPayer: {$d['payer']}\nTime: {$d['purchase_time']}",
                         "reply_markup"=>json_encode([
                             "inline_keyboard"=>[
                                 [["text"=>"✅ Approve","callback_data"=>"approve_$uid"]],
