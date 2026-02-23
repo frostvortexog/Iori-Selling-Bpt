@@ -2,7 +2,7 @@
 $BOT_TOKEN = getenv("BOT_TOKEN");
 $ADMIN_IDS = explode(",", getenv("ADMIN_IDS"));
 $SUPA_URL  = getenv("SUPABASE_URL");
-$SUPA_KEY  = getenv("SUPABASE_KEY");
+$SUPA_KEY  = getenv("SUPA_KEY");
 
 $update = json_decode(file_get_contents("php://input"), true);
 if(!$update) exit;
@@ -120,6 +120,7 @@ if($state && $state["step"]=="qty" && is_numeric($text)){
 if($cb){
     $data = $cb["data"];
 
+    // User Accept Terms
     if($data=="accept_terms"){
         $st = getState($uid);
         $qty = $st["data"]["qty"];
@@ -138,53 +139,44 @@ if($cb){
         ]);
     }
 
+    // User Done Payment
     if($data=="paid"){
         setState($uid,"payer",getState($uid)["data"]);
         tg("sendMessage",["chat_id"=>$cid,"text"=>"Enter payer name"]);
     }
 
-    /* ---------- ADMIN APPROVE / DECLINE ---------- */
-    foreach($ADMIN_IDS as $admin){
-        if($uid==$admin && strpos($data,"approve_")===0){
-            $user_id = str_replace("approve_","",$data);
-            $orders = supa("/rest/v1/orders?user_id=eq.$user_id&status=eq.pending&order=created_at.desc");
-            if(!$orders) exit;
-            $order = $orders[0];
-            $qty = $order["quantity"];
-            $coupons = supa("/rest/v1/coupons?is_used=eq.false&limit=$qty");
-            if(count($coupons)<$qty){
-                tg("sendMessage",["chat_id"=>$admin,"text"=>"Not enough coupons in stock"]);
-                exit;
-            }
-            $codes=[];
-            foreach($coupons as $c){
-                $codes[]=$c["code"];
-                supa("/rest/v1/coupons?id=eq.{$c['id']}","PATCH",["is_used"=>true]);
-            }
-            supa("/rest/v1/orders?id=eq.{$order['id']}","PATCH",["status"=>"approved"]);
-            tg("sendMessage",["chat_id"=>$user_id,"text"=>"✅ Your order #{$order['id']} approved!\n\nYour coupons:\n".implode("\n",$codes)]);
-            tg("sendMessage",["chat_id"=>$admin,"text"=>"Order #{$order['id']} approved and coupons delivered."]);
-        }
-        if($uid==$admin && strpos($data,"decline_")===0){
-            $user_id = str_replace("decline_","",$data);
-            $orders = supa("/rest/v1/orders?user_id=eq.$user_id&status=eq.pending&order=created_at.desc");
-            if(!$orders) exit;
-            $order = $orders[0];
-            supa("/rest/v1/orders?id=eq.{$order['id']}","PATCH",["status"=>"declined"]);
-            tg("sendMessage",["chat_id"=>$user_id,"text"=>"❌ Your order #{$order['id']} declined."]);
-            tg("sendMessage",["chat_id"=>$admin,"text"=>"Order #{$order['id']} declined."]);
-        }
+    /* ---------- ADMIN PANEL CALLBACKS ---------- */
+    if(in_array($uid,$ADMIN_IDS)){
+        if($data=="change_price"){ setState($uid,"change_price"); tg("sendMessage",["chat_id"=>$cid,"text"=>"Enter new price:"]); }
+        if($data=="add_coupon"){ setState($uid,"add_coupon"); tg("sendMessage",["chat_id"=>$cid,"text"=>"Send coupon codes (comma or newline separated):"]); }
+        if($data=="remove_coupon"){ setState($uid,"remove_coupon"); tg("sendMessage",["chat_id"=>$cid,"text"=>"How many coupons to remove?"]); }
+        if($data=="free_coupon"){ setState($uid,"free_coupon"); tg("sendMessage",["chat_id"=>$cid,"text"=>"How many free coupons to give?"]); }
+        if($data=="update_qr"){ setState($uid,"update_qr"); tg("sendMessage",["chat_id"=>$cid,"text"=>"Send QR image"]); }
     }
 
-    /* ---------- ADMIN PANEL BUTTON CALLBACKS ---------- */
-    if(in_array($uid,$ADMIN_IDS)){
-        if($data=="change_price"){
-            setState($uid,"change_price");
-            tg("sendMessage",["chat_id"=>$cid,"text"=>"Enter new price for the coupon:"]);
+    /* ---------- ADMIN APPROVE/DECLINE ORDERS ---------- */
+    foreach($ADMIN_IDS as $admin){
+        if($uid==$admin && strpos($data,"approve_")===0){
+            $user_id=str_replace("approve_","",$data);
+            $orders=supa("/rest/v1/orders?user_id=eq.$user_id&status=eq.pending&order=created_at.desc");
+            if(!$orders) exit;
+            $order=$orders[0];
+            $qty=$order["quantity"];
+            $coupons=supa("/rest/v1/coupons?is_used=eq.false&limit=$qty");
+            if(count($coupons)<$qty){ tg("sendMessage",["chat_id"=>$admin,"text"=>"Not enough coupons in stock"]); exit; }
+            $codes=[]; foreach($coupons as $c){ $codes[]=$c["code"]; supa("/rest/v1/coupons?id=eq.{$c['id']}","PATCH",["is_used"=>true]); }
+            supa("/rest/v1/orders?id=eq.{$order['id']}","PATCH",["status"=>"approved"]);
+            tg("sendMessage",["chat_id"=>$user_id,"text"=>"✅ Order #{$order['id']} approved!\n\nYour coupons:\n".implode("\n",$codes)]);
+            tg("sendMessage",["chat_id"=>$admin,"text"=>"Order #{$order['id']} approved."]);
         }
-        if($data=="update_qr"){
-            setState($uid,"update_qr");
-            tg("sendMessage",["chat_id"=>$cid,"text"=>"Send new QR image"]);
+        if($uid==$admin && strpos($data,"decline_")===0){
+            $user_id=str_replace("decline_","",$data);
+            $orders=supa("/rest/v1/orders?user_id=eq.$user_id&status=eq.pending&order=created_at.desc");
+            if(!$orders) exit;
+            $order=$orders[0];
+            supa("/rest/v1/orders?id=eq.{$order['id']}","PATCH",["status"=>"declined"]);
+            tg("sendMessage",["chat_id"=>$user_id,"text"=>"❌ Order #{$order['id']} declined."]);
+            tg("sendMessage",["chat_id"=>$admin,"text"=>"Order #{$order['id']} declined."]);
         }
     }
 }
