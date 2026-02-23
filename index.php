@@ -96,17 +96,25 @@ if($text=="🛒 Buy Coupon"){
         tg("sendMessage",["chat_id"=>$cid,"text"=>"❌ No stock available"]);
         exit;
     }
-    $price = supa("/rest/v1/settings?id=eq.1")[0]["coupon_price"];
     setState($uid,"qty");
-    tg("sendMessage",["chat_id"=>$cid,"text"=>"₹500 OFF on ₹500 (₹$price)\n\nEnter quantity:"]);
-}
-
-$state = getState($uid);
-if($state && $state["step"]=="qty" && is_numeric($text)){
-    setState($uid,"terms",["qty"=>$text]);
     tg("sendMessage",[
         "chat_id"=>$cid,
-        "text"=>"⚠️ Disclaimer\n\n1. No refund\n2. Fresh coupons\n3. Final sale",
+        "text"=>"Enter quantity of coupons to buy (Available stock: $stock):"
+    ]);
+}
+
+/* ---------- AFTER USER ENTERS QUANTITY ---------- */
+$state = getState($uid);
+if($state && $state["step"]=="qty" && is_numeric($text)){
+    setState($uid,"terms",["qty"=>intval($text)]);
+    $disclaimer = "⚠️ Disclaimer\n\n".
+                  "1. Once coupon is delivered, no returns or refunds will be accepted.\n".
+                  "2. All coupons are fresh and valid. Please check usage instructions carefully.\n".
+                  "3. All sales are final. No refunds, no replacements, no exceptions.\n\n".
+                  "✅ By purchasing, you agree to these terms.";
+    tg("sendMessage",[
+        "chat_id"=>$cid,
+        "text"=>$disclaimer,
         "reply_markup"=>json_encode([
             "inline_keyboard"=>[
                 [["text"=>"✅ Accept Terms","callback_data"=>"accept_terms"]]
@@ -124,12 +132,17 @@ if($cb){
         $st = getState($uid);
         $qty = $st["data"]["qty"];
         $set = supa("/rest/v1/settings?id=eq.1")[0];
-        $total = $qty * $set["coupon_price"];
-        setState($uid,"paid",["qty"=>$qty,"total"=>$total]);
+        $price = $set["coupon_price"];
+        $total = $qty * $price;
+        $purchase_time = date("Y-m-d H:i:s");
+
+        // Store qty, total, time in state
+        setState($uid,"paid",["qty"=>$qty,"total"=>$total,"purchase_time"=>$purchase_time]);
+
         tg("sendPhoto",[
             "chat_id"=>$cid,
             "photo"=>$set["qr_file_id"],
-            "caption"=>"Qty: $qty\nTotal: ₹$total",
+            "caption"=>"🎟️ Coupon Purchase\n\nQty: $qty\nTotal: ₹$total\nTime: $purchase_time",
             "reply_markup"=>json_encode([
                 "inline_keyboard"=>[
                     [["text"=>"💸 I have done the payment","callback_data"=>"paid"]]
@@ -141,7 +154,7 @@ if($cb){
     // User Done Payment
     if($data=="paid"){
         setState($uid,"payer",getState($uid)["data"]);
-        tg("sendMessage",["chat_id"=>$cid,"text"=>"Enter payer name"]);
+        tg("sendMessage",["chat_id"=>$cid,"text"=>"Enter payer name:"]);
     }
 
     /* ---------- ADMIN PANEL BUTTONS ---------- */
@@ -197,6 +210,50 @@ if($cb){
     }
 }
 
+/* ---------- USER PAYMENT FLOW ---------- */
+if($state){
+    switch($state["step"]){
+        case "payer":
+            if($text){
+                $d=$state["data"];
+                $d["payer"]=$text;
+                setState($uid,"screenshot",$d);
+                tg("sendMessage",["chat_id"=>$cid,"text"=>"Send payment screenshot:"]);
+            }
+            break;
+        case "screenshot":
+            if(isset($msg["photo"])){
+                $file=end($msg["photo"])["file_id"];
+                $d=$state["data"];
+                supa("/rest/v1/orders","POST",[
+                    "user_id"=>$uid,
+                    "quantity"=>$d["qty"],
+                    "total"=>$d["total"],
+                    "payer_name"=>$d["payer"],
+                    "screenshot"=>$file,
+                    "status"=>"pending",
+                    "created_at"=>$d["purchase_time"]
+                ]);
+                clearState($uid);
+                tg("sendMessage",["chat_id"=>$cid,"text"=>"⏳ Waiting for admin approval"]);
+                foreach($ADMIN_IDS as $admin){
+                    tg("sendPhoto",[
+                        "chat_id"=>$admin,
+                        "photo"=>$file,
+                        "caption"=>"New Order\nUser: $uid\nQty: {$d['qty']}\n₹{$d['total']}\nPayer: {$d['payer']}\nTime: {$d['purchase_time']}",
+                        "reply_markup"=>json_encode([
+                            "inline_keyboard"=>[
+                                [["text"=>"✅ Approve","callback_data"=>"approve_$uid"]],
+                                [["text"=>"❌ Decline","callback_data"=>"decline_$uid"]]
+                            ]
+                        ])
+                    ]);
+                }
+            }
+            break;
+    }
+}
+
 /* ---------- ADMIN STATE HANDLERS ---------- */
 if($state && in_array($uid,$ADMIN_IDS)){
     switch($state["step"]){
@@ -247,42 +304,6 @@ if($state && in_array($uid,$ADMIN_IDS)){
                 clearState($uid);
             }
             break;
-    }
-}
-
-/* ---------- USER PAYMENT FLOW ---------- */
-if($state && $state["step"]=="payer" && $text){
-    $d=$state["data"];
-    $d["payer"]=$text;
-    setState($uid,"screenshot",$d);
-    tg("sendMessage",["chat_id"=>$cid,"text"=>"Send payment screenshot"]);
-}
-if($msg && isset($msg["photo"]) && $state && $state["step"]=="screenshot"){
-    $file=end($msg["photo"])["file_id"];
-    $d=$state["data"];
-    supa("/rest/v1/orders","POST",[
-        "user_id"=>$uid,
-        "quantity"=>$d["qty"],
-        "total"=>$d["total"],
-        "payer_name"=>$d["payer"],
-        "screenshot"=>$file,
-        "status"=>"pending"
-    ]);
-    clearState($uid);
-    tg("sendMessage",["chat_id"=>$cid,"text"=>"⏳ Waiting for admin approval"]);
-
-    foreach($ADMIN_IDS as $admin){
-        tg("sendPhoto",[
-            "chat_id"=>$admin,
-            "photo"=>$file,
-            "caption"=>"New Order\nUser: $uid\nQty: {$d['qty']}\n₹{$d['total']}\nPayer: {$d['payer']}",
-            "reply_markup"=>json_encode([
-                "inline_keyboard"=>[
-                    [["text"=>"✅ Approve","callback_data"=>"approve_$uid"]],
-                    [["text"=>"❌ Decline","callback_data"=>"decline_$uid"]]
-                ]
-            ])
-        ]);
     }
 }
 
