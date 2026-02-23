@@ -2,7 +2,7 @@
 $BOT_TOKEN = getenv("BOT_TOKEN");
 $ADMIN_IDS = explode(",", getenv("ADMIN_IDS"));
 $SUPA_URL  = getenv("SUPABASE_URL");
-$SUPA_KEY  = getenv("SUPA_KEY");
+$SUPA_KEY  = getenv("SUPABASE_KEY");
 
 $update = json_decode(file_get_contents("php://input"), true);
 if(!$update) exit;
@@ -32,7 +32,6 @@ function supa($endpoint,$method="GET",$body=null){
     return json_decode(file_get_contents($SUPA_URL.$endpoint,false,stream_context_create($opts)),true);
 }
 
-// incoming message or callback
 $msg = $update["message"] ?? null;
 $cb  = $update["callback_query"] ?? null;
 
@@ -116,10 +115,10 @@ if($state && $state["step"]=="qty" && is_numeric($text)){
     ]);
 }
 
-/* ---------- CALLBACKS ---------- */
+/* ---------- CALLBACK HANDLERS ---------- */
 if($cb){
     $data = $cb["data"];
-
+    
     // User Accept Terms
     if($data=="accept_terms"){
         $st = getState($uid);
@@ -145,16 +144,33 @@ if($cb){
         tg("sendMessage",["chat_id"=>$cid,"text"=>"Enter payer name"]);
     }
 
-    /* ---------- ADMIN PANEL CALLBACKS ---------- */
+    /* ---------- ADMIN PANEL BUTTONS ---------- */
     if(in_array($uid,$ADMIN_IDS)){
-        if($data=="change_price"){ setState($uid,"change_price"); tg("sendMessage",["chat_id"=>$cid,"text"=>"Enter new price:"]); }
-        if($data=="add_coupon"){ setState($uid,"add_coupon"); tg("sendMessage",["chat_id"=>$cid,"text"=>"Send coupon codes (comma or newline separated):"]); }
-        if($data=="remove_coupon"){ setState($uid,"remove_coupon"); tg("sendMessage",["chat_id"=>$cid,"text"=>"How many coupons to remove?"]); }
-        if($data=="free_coupon"){ setState($uid,"free_coupon"); tg("sendMessage",["chat_id"=>$cid,"text"=>"How many free coupons to give?"]); }
-        if($data=="update_qr"){ setState($uid,"update_qr"); tg("sendMessage",["chat_id"=>$cid,"text"=>"Send QR image"]); }
+        switch($data){
+            case "change_price":
+                setState($uid,"change_price");
+                tg("sendMessage",["chat_id"=>$cid,"text"=>"Enter new price:"]);
+                break;
+            case "add_coupon":
+                setState($uid,"add_coupon");
+                tg("sendMessage",["chat_id"=>$cid,"text"=>"Send coupon codes (comma or newline separated):"]);
+                break;
+            case "remove_coupon":
+                setState($uid,"remove_coupon");
+                tg("sendMessage",["chat_id"=>$cid,"text"=>"How many coupons to remove?"]);
+                break;
+            case "free_coupon":
+                setState($uid,"free_coupon");
+                tg("sendMessage",["chat_id"=>$cid,"text"=>"How many free coupons to give?"]);
+                break;
+            case "update_qr":
+                setState($uid,"update_qr");
+                tg("sendMessage",["chat_id"=>$cid,"text"=>"Send QR image"]);
+                break;
+        }
     }
 
-    /* ---------- ADMIN APPROVE/DECLINE ORDERS ---------- */
+    /* ---------- ADMIN APPROVE / DECLINE ORDERS ---------- */
     foreach($ADMIN_IDS as $admin){
         if($uid==$admin && strpos($data,"approve_")===0){
             $user_id=str_replace("approve_","",$data);
@@ -181,7 +197,60 @@ if($cb){
     }
 }
 
-/* ---------- PAYMENT FLOW ---------- */
+/* ---------- ADMIN STATE HANDLERS ---------- */
+if($state && in_array($uid,$ADMIN_IDS)){
+    switch($state["step"]){
+        case "change_price":
+            if(is_numeric($text)){
+                supa("/rest/v1/settings?id=eq.1","PATCH",["coupon_price"=>intval($text)]);
+                tg("sendMessage",["chat_id"=>$cid,"text"=>"✅ Price updated to ₹$text"]);
+                clearState($uid);
+            }
+            break;
+        case "add_coupon":
+            $codes = preg_split("/[\r\n,]+/", $text);
+            foreach($codes as $code){
+                $code=trim($code);
+                if($code=="") continue;
+                supa("/rest/v1/coupons","POST",["code"=>$code]);
+            }
+            tg("sendMessage",["chat_id"=>$cid,"text"=>"✅ Coupons added successfully"]);
+            clearState($uid);
+            break;
+        case "remove_coupon":
+            if(is_numeric($text)){
+                $qty=intval($text);
+                $coupons=supa("/rest/v1/coupons?is_used=eq.false&limit=$qty");
+                foreach($coupons as $c){ supa("/rest/v1/coupons?id=eq.{$c['id']}","PATCH",["is_used"=>true]); }
+                tg("sendMessage",["chat_id"=>$cid,"text"=>"✅ $qty coupons removed from stock"]);
+                clearState($uid);
+            }
+            break;
+        case "free_coupon":
+            if(is_numeric($text)){
+                $qty=intval($text);
+                $coupons=supa("/rest/v1/coupons?is_used=eq.false&limit=$qty");
+                $codes=[];
+                foreach($coupons as $c){
+                    $codes[]=$c["code"];
+                    supa("/rest/v1/coupons?id=eq.{$c['id']}","PATCH",["is_used"=>true]);
+                }
+                tg("sendMessage",["chat_id"=>$cid,"text"=>"✅ Free coupons:\n".implode("\n",$codes)]);
+                clearState($uid);
+            }
+            break;
+        case "update_qr":
+            if(isset($msg["photo"])){
+                $file=end($msg["photo"])["file_id"];
+                supa("/rest/v1/settings?id=eq.1","PATCH",["qr_file_id"=>$file]);
+                tg("sendMessage",["chat_id"=>$cid,"text"=>"✅ QR updated successfully"]);
+                clearState($uid);
+            }
+            break;
+    }
+}
+
+/* ---------- USER PAYMENT FLOW ---------- */
 if($state && $state["step"]=="payer" && $text){
     $d=$state["data"];
     $d["payer"]=$text;
