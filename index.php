@@ -112,12 +112,16 @@ if($state && $state["step"]=="qty" && is_numeric($text)){
     $total = $qty * $price;
     $purchase_time = date("Y-m-d H:i:s");
 
-    // Save everything in state
-    setState($uid,"terms",[
-        "qty"=>$qty,
-        "price"=>$price,
-        "total"=>$total,
-        "purchase_time"=>$purchase_time
+    // Store all in state
+    supa("/rest/v1/user_state","POST",[
+        "user_id"=>$uid,
+        "step"=>"terms",
+        "data"=>[
+            "qty"=>$qty,
+            "price"=>$price,
+            "total"=>$total,
+            "purchase_time"=>$purchase_time
+        ]
     ]);
 
     $disclaimer = "⚠️ Disclaimer\n\n".
@@ -140,20 +144,23 @@ if($state && $state["step"]=="qty" && is_numeric($text)){
 /* ---------- CALLBACK HANDLERS ---------- */
 if($cb){
     $data = $cb["data"];
-    
+
     // User Accept Terms
     if($data=="accept_terms"){
         $state = getState($uid);
-        if(!$state) exit;
+        if(!$state || !isset($state["data"])) exit;
 
         $qty = $state["data"]["qty"];
         $total = $state["data"]["total"];
         $purchase_time = $state["data"]["purchase_time"];
-
         $set = supa("/rest/v1/settings?id=eq.1")[0];
 
         // Move to paid step
-        setState($uid,"paid",$state["data"]);
+        supa("/rest/v1/user_state","POST",[
+            "user_id"=>$uid,
+            "step"=>"paid",
+            "data"=>$state["data"]
+        ]);
 
         tg("sendPhoto",[
             "chat_id"=>$cid,
@@ -170,8 +177,13 @@ if($cb){
     // User Done Payment
     if($data=="paid"){
         $state = getState($uid);
-        if(!$state) exit;
-        setState($uid,"payer",$state["data"]);
+        if(!$state || !isset($state["data"])) exit;
+
+        supa("/rest/v1/user_state","POST",[
+            "user_id"=>$uid,
+            "step"=>"payer",
+            "data"=>$state["data"]
+        ]);
         tg("sendMessage",["chat_id"=>$cid,"text"=>"Enter payer name:"]);
     }
 
@@ -236,7 +248,11 @@ if($state){
             if($text){
                 $d=$state["data"];
                 $d["payer"]=$text;
-                setState($uid,"screenshot",$d);
+                supa("/rest/v1/user_state","POST",[
+                    "user_id"=>$uid,
+                    "step"=>"screenshot",
+                    "data"=>$d
+                ]);
                 tg("sendMessage",["chat_id"=>$cid,"text"=>"Send payment screenshot:"]);
             }
             break;
