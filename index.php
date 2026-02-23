@@ -39,7 +39,7 @@ function sb($endpoint,$method="GET",$body=null){
 }
 
 function setting($key){ $r=sb("settings?key=eq.$key"); return $r[0]['value']??""; }
-function stock($quality=null){ $where = $quality ? "&quality=eq.$quality" : ""; $r=sb("coupons?is_used=eq.false$where"); return count($r); }
+function stock(){ $r=sb("coupons?is_used=eq.false"); return count($r); }
 function isAdmin($id){ global $ADMIN_IDS; return in_array($id,$ADMIN_IDS); }
 
 // ================= STATE =================
@@ -73,7 +73,8 @@ if($text=="/start" || $text=="🔄 Menu"){
 if($data=="stock"){ tg("sendMessage",["chat_id"=>$chat_id,"text"=>"📦 Available coupons: ".stock()]); }
 if($data=="support"){ tg("sendMessage",["chat_id"=>$chat_id,"text"=>"Contact: $SUPPORT"]); }
 if($data=="orders"){
-    $orders=sb("orders?user_id=eq.$user_id"); $msg="Your Orders:\n";
+    $orders=sb("orders?user_id=eq.$user_id");
+    $msg="Your Orders:\n";
     foreach($orders as $o){ $msg.="ID:".$o['id']." Qty:".$o['qty']." Total:".$o['total']." Status:".$o['status']."\n"; }
     tg("sendMessage",["chat_id"=>$chat_id,"text"=>$msg]);
 }
@@ -96,54 +97,53 @@ if($data=="buy"){
     ]);
 }
 
-if($data=="accept_terms"){ 
-    setState($chat_id,["step"=>"choose_quality"]);
-    tg("sendMessage",[
-        "chat_id"=>$chat_id,
-        "text"=>"Select coupon quality:",
-        "reply_markup"=>json_encode([
-            "inline_keyboard"=>[[["text"=>"Basic","callback_data"=>"quality_basic"]],[["text"=>"Premium","callback_data"=>"quality_premium"]]]
-        ])
-    ]);
-}
-
-if(strpos($data,"quality_")===0){
-    $quality=str_replace("quality_","",$data);
-    setState($chat_id,["step"=>"qty","quality"=>$quality]);
-    tg("sendMessage",["chat_id"=>$chat_id,"text"=>"Enter quantity of $quality coupons to buy:"]);
+// ================= ACCEPT TERMS =================
+if($data=="accept_terms"){
+    setState($chat_id,["step"=>"qty"]);
+    tg("sendMessage",["chat_id"=>$chat_id,"text"=>"Enter quantity of coupons to buy:"]);
 }
 
 // ================= QUANTITY =================
-$state=getState($chat_id);
+$state = getState($chat_id);
 if($state && $state['step']=="qty" && is_numeric($text)){
-    setState($chat_id,["step"=>"payer","quality"=>$state['quality'],"qty"=>$text]);
-    $price=setting("price_".$state['quality']); $total=$price*$text;
+    setState($chat_id,["step"=>"payer","qty"=>$text]);
+    $price = setting("price_500"); // single coupon price
+    $total = $price*$text;
     tg("sendPhoto",["chat_id"=>$chat_id,"photo"=>setting("qr"),"caption"=>"Total amount: ₹$total\nSend payer name after payment."]);
 }
 
 // ================= PAYER NAME =================
-$state=getState($chat_id);
+$state = getState($chat_id);
 if($state && $state['step']=="payer" && !empty($text)){
     $state['step']="proof"; $state['payer']=$text; setState($chat_id,$state);
     tg("sendMessage",["chat_id"=>$chat_id,"text"=>"Send payment screenshot"]);
 }
 
 // ================= PAYMENT PROOF =================
-$state=getState($chat_id);
+$state = getState($chat_id);
 if($state && $state['step']=="proof" && isset($update['message']['photo'])){
     $file_id=end($update['message']['photo'])['file_id'];
-    $qty=$state['qty']; $quality=$state['quality']; $payer=$state['payer'];
-    $price=setting("price_$quality"); $total=$price*$qty;
+    $qty=$state['qty']; $payer=$state['payer'];
+    $price=setting("price_500"); $total=$price*$qty;
 
-    $order=sb("orders","POST",["user_id"=>$user_id,"username"=>"@".$update['message']['from']['username'],"qty"=>$qty,"total"=>$total,"payer"=>$payer,"proof"=>$file_id,"quality"=>$quality]);
+    $order=sb("orders","POST",[
+        "user_id"=>$user_id,
+        "username"=>"@".$update['message']['from']['username'],
+        "qty"=>$qty,
+        "total"=>$total,
+        "payer"=>$payer,
+        "proof"=>$file_id,
+        "quality"=>"500_off",
+        "status"=>"pending"
+    ]);
 
     foreach($ADMIN_IDS as $admin){
         tg("sendPhoto",[
             "chat_id"=>$admin,
             "photo"=>$file_id,
-            "caption"=>"🧾 Order #".$order[0]['id']."\nUser: @$user_id\nQty: $qty\nTotal: ₹$total\nPayer: $payer\nQuality: $quality",
+            "caption"=>"🧾 Order #".$order[0]['id']."\nUser: @$user_id\nQty: $qty\nTotal: ₹$total\nPayer: $payer",
             "reply_markup"=>json_encode([
-                "inline_keyboard"=>[[["text"=>"✅ Approve","callback_data"=>"approve_".$order[0]['id']."_$quality"]],[["text"=>"❌ Decline","callback_data"=>"decline_".$order[0]['id']]]]
+                "inline_keyboard"=>[[["text"=>"✅ Approve","callback_data"=>"approve_".$order[0]['id']]], [["text"=>"❌ Decline","callback_data"=>"decline_".$order[0]['id']]]]
             ])
         ]);
     }
@@ -165,9 +165,9 @@ if($data=="admin" && isAdmin($user_id)){
 
 // ================= ADMIN APPROVE / DECLINE =================
 if(strpos($data,"approve_")===0 && isAdmin($user_id)){
-    list($oid,$quality)=explode("_",str_replace("approve_","",$data));
-    $order=sb("orders?id=eq.$oid")[0];
-    $coupons=sb("coupons?quality=eq.$quality&is_used=eq.false&limit=".$order['qty']);
+    $oid = str_replace("approve_","",$data);
+    $order = sb("orders?id=eq.$oid")[0];
+    $coupons = sb("coupons?is_used=eq.false&limit=".$order['qty']);
     if(!$coupons){ tg("sendMessage",["chat_id"=>$order['user_id'],"text"=>"❌ Not enough stock"]); }
     else{
         foreach($coupons as $c) sb("coupons?id=eq.".$c['id'],"PATCH",["is_used"=>true]);
@@ -175,10 +175,9 @@ if(strpos($data,"approve_")===0 && isAdmin($user_id)){
         sb("orders?id=eq.$oid","PATCH",["status"=>"approved"]);
     }
 }
-
 if(strpos($data,"decline_")===0 && isAdmin($user_id)){
-    $oid=str_replace("decline_","",$data);
-    $order=sb("orders?id=eq.$oid")[0];
+    $oid = str_replace("decline_","",$data);
+    $order = sb("orders?id=eq.$oid")[0];
     tg("sendMessage",["chat_id"=>$order['user_id'],"text"=>"❌ Payment declined by admin"]);
     sb("orders?id=eq.$oid","PATCH",["status"=>"declined"]);
 }
