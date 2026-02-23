@@ -106,12 +106,26 @@ if($text=="🛒 Buy Coupon"){
 /* ---------- AFTER USER ENTERS QUANTITY ---------- */
 $state = getState($uid);
 if($state && $state["step"]=="qty" && is_numeric($text)){
-    setState($uid,"terms",["qty"=>intval($text)]);
+    $qty = intval($text);
+    $set = supa("/rest/v1/settings?id=eq.1")[0];
+    $price = $set["coupon_price"];
+    $total = $qty * $price;
+    $purchase_time = date("Y-m-d H:i:s");
+
+    // Save everything in state
+    setState($uid,"terms",[
+        "qty"=>$qty,
+        "price"=>$price,
+        "total"=>$total,
+        "purchase_time"=>$purchase_time
+    ]);
+
     $disclaimer = "⚠️ Disclaimer\n\n".
                   "1. Once coupon is delivered, no returns or refunds will be accepted.\n".
                   "2. All coupons are fresh and valid. Please check usage instructions carefully.\n".
                   "3. All sales are final. No refunds, no replacements, no exceptions.\n\n".
                   "✅ By purchasing, you agree to these terms.";
+
     tg("sendMessage",[
         "chat_id"=>$cid,
         "text"=>$disclaimer,
@@ -129,15 +143,17 @@ if($cb){
     
     // User Accept Terms
     if($data=="accept_terms"){
-        $st = getState($uid);
-        $qty = $st["data"]["qty"];
-        $set = supa("/rest/v1/settings?id=eq.1")[0];
-        $price = $set["coupon_price"];
-        $total = $qty * $price;
-        $purchase_time = date("Y-m-d H:i:s");
+        $state = getState($uid);
+        if(!$state) exit;
 
-        // Store qty, total, time in state
-        setState($uid,"paid",["qty"=>$qty,"total"=>$total,"purchase_time"=>$purchase_time]);
+        $qty = $state["data"]["qty"];
+        $total = $state["data"]["total"];
+        $purchase_time = $state["data"]["purchase_time"];
+
+        $set = supa("/rest/v1/settings?id=eq.1")[0];
+
+        // Move to paid step
+        setState($uid,"paid",$state["data"]);
 
         tg("sendPhoto",[
             "chat_id"=>$cid,
@@ -153,7 +169,9 @@ if($cb){
 
     // User Done Payment
     if($data=="paid"){
-        setState($uid,"payer",getState($uid)["data"]);
+        $state = getState($uid);
+        if(!$state) exit;
+        setState($uid,"payer",$state["data"]);
         tg("sendMessage",["chat_id"=>$cid,"text"=>"Enter payer name:"]);
     }
 
@@ -211,6 +229,7 @@ if($cb){
 }
 
 /* ---------- USER PAYMENT FLOW ---------- */
+$state = getState($uid);
 if($state){
     switch($state["step"]){
         case "payer":
@@ -223,8 +242,8 @@ if($state){
             break;
         case "screenshot":
             if(isset($msg["photo"])){
-                $file=end($msg["photo"])["file_id"];
                 $d=$state["data"];
+                $file=end($msg["photo"])["file_id"];
                 supa("/rest/v1/orders","POST",[
                     "user_id"=>$uid,
                     "quantity"=>$d["qty"],
@@ -240,7 +259,7 @@ if($state){
                     tg("sendPhoto",[
                         "chat_id"=>$admin,
                         "photo"=>$file,
-                        "caption"=>"New Order\nUser: $uid\nQty: {$d['qty']}\n₹{$d['total']}\nPayer: {$d['payer']}\nTime: {$d['purchase_time']}",
+                        "caption"=>"📥 New Order\nUser: $uid\nQty: {$d['qty']}\nTotal: ₹{$d['total']}\nPayer: {$d['payer']}\nTime: {$d['purchase_time']}",
                         "reply_markup"=>json_encode([
                             "inline_keyboard"=>[
                                 [["text"=>"✅ Approve","callback_data"=>"approve_$uid"]],
