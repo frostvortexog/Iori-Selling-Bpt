@@ -2,7 +2,7 @@
 // ================= CONFIG =================
 $BOT_TOKEN = getenv("BOT_TOKEN");
 $SUPA_URL = getenv("SUPABASE_URL");
-$SUPA_KEY = getenv("SUPABASE_KEY");
+$SUPA_KEY = getenv("SUPA_KEY");
 $ADMIN_IDS = array_map('trim', explode(",", getenv("ADMIN_IDS")));
 $SUPPORT = getenv("SUPPORT_USERNAME") ?: "@Slursupportrobot";
 $API = "https://api.telegram.org/bot$BOT_TOKEN/";
@@ -106,10 +106,24 @@ if($data=="accept_terms"){
 // ================= QUANTITY =================
 $state = getState($chat_id);
 if($state && $state['step']=="qty" && is_numeric($text)){
-    setState($chat_id,["step"=>"payer","qty"=>$text]);
-    $price = setting("price_500"); // single coupon price
-    $total = $price*$text;
-    tg("sendPhoto",["chat_id"=>$chat_id,"photo"=>setting("qr"),"caption"=>"Total amount: ₹$total\nSend payer name after payment."]);
+    $qty = (int)$text;
+    $price = (int)setting("price_500"); 
+    $total = $price*$qty;
+    setState($chat_id,["step"=>"payment","qty"=>$qty,"total"=>$total]);
+    tg("sendPhoto",[
+        "chat_id"=>$chat_id,
+        "photo"=>setting("qr"),
+        "caption"=>"You are buying $qty coupons\nPrice per coupon: ₹$price\nTotal amount: ₹$total",
+        "reply_markup"=>json_encode([
+            "inline_keyboard"=>[[["text"=>"💳 I have done the payment","callback_data"=>"payment_done"]]]
+        ])
+    ]);
+}
+
+// ================= PAYMENT DONE =================
+if($data=="payment_done"){
+    setState($chat_id,["step"=>"payer"]);
+    tg("sendMessage",["chat_id"=>$chat_id,"text"=>"Enter payer name:"]);
 }
 
 // ================= PAYER NAME =================
@@ -123,8 +137,7 @@ if($state && $state['step']=="payer" && !empty($text)){
 $state = getState($chat_id);
 if($state && $state['step']=="proof" && isset($update['message']['photo'])){
     $file_id=end($update['message']['photo'])['file_id'];
-    $qty=$state['qty']; $payer=$state['payer'];
-    $price=setting("price_500"); $total=$price*$qty;
+    $qty=$state['qty']; $payer=$state['payer']; $total=$state['total'];
 
     $order=sb("orders","POST",[
         "user_id"=>$user_id,
